@@ -23,6 +23,12 @@ function Index() {
   const [booted, setBooted] = useState(false);
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [activated, setActivated] = useState(false);
+
+  const handleWake = () => {
+    setActivated(true);
+    setTimeout(() => setActivated(false), 2000);
+  };
 
   return (
     <>
