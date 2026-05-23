@@ -92,7 +92,7 @@ function Index() {
               <AIOrb listening={listening} speaking={speaking} />
             </div>
             <div className="h-[300px]">
-              <ChatTerminal onListenChange={setListening} onSpeakChange={setSpeaking} />
+              <ChatTerminal onListenChange={setListening} onSpeakChange={setSpeaking} onWakeDetected={handleWake} />
             </div>
           </section>
 
