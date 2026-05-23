@@ -102,6 +102,7 @@ function Index() {
           </aside>
         </main>
       </div>
+      <ActivationOverlay active={activated} />
     </>
   );
 }
