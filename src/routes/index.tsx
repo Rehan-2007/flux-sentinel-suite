@@ -6,6 +6,7 @@ import { SystemPanel } from "@/components/jarvis/SystemPanel";
 import { RightPanel } from "@/components/jarvis/RightPanel";
 import { ChatTerminal } from "@/components/jarvis/ChatTerminal";
 import { BootSequence } from "@/components/jarvis/BootSequence";
+import { ActivationOverlay } from "@/components/jarvis/ActivationOverlay";
 import { ShieldCheck, Power, Settings, Zap } from "lucide-react";
 
 export const Route = createFileRoute("/")({
