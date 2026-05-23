@@ -6,6 +6,7 @@ import { SystemPanel } from "@/components/jarvis/SystemPanel";
 import { RightPanel } from "@/components/jarvis/RightPanel";
 import { ChatTerminal } from "@/components/jarvis/ChatTerminal";
 import { BootSequence } from "@/components/jarvis/BootSequence";
+import { ActivationOverlay } from "@/components/jarvis/ActivationOverlay";
 import { ShieldCheck, Power, Settings, Zap } from "lucide-react";
 
 export const Route = createFileRoute("/")({
@@ -22,6 +23,12 @@ function Index() {
   const [booted, setBooted] = useState(false);
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [activated, setActivated] = useState(false);
+
+  const handleWake = () => {
+    setActivated(true);
+    setTimeout(() => setActivated(false), 2000);
+  };
 
   return (
     <>
@@ -85,7 +92,7 @@ function Index() {
               <AIOrb listening={listening} speaking={speaking} />
             </div>
             <div className="h-[300px]">
-              <ChatTerminal onListenChange={setListening} onSpeakChange={setSpeaking} />
+              <ChatTerminal onListenChange={setListening} onSpeakChange={setSpeaking} onWakeDetected={handleWake} />
             </div>
           </section>
 
@@ -95,6 +102,7 @@ function Index() {
           </aside>
         </main>
       </div>
+      <ActivationOverlay active={activated} />
     </>
   );
 }
