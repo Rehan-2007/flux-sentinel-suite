@@ -1,7 +1,8 @@
-import { Mic, MicOff, Send, Sparkles, Search, AlertCircle } from "lucide-react";
+import { Mic, MicOff, Send, Sparkles, Search, AlertCircle, Volume2, VolumeX, Settings as Cog } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSpeechRecognition, isSpeechRecognitionSupported, speak, cancelSpeak } from "@/lib/speech";
+import { getJarvisSettings, matchesWake, setJarvisSettings, useJarvisSettings } from "@/lib/jarvis-settings";
 
 interface Msg { role: "user" | "ai"; text: string; }
 
@@ -9,6 +10,7 @@ interface Props {
   onListenChange: (v: boolean) => void;
   onSpeakChange: (v: boolean) => void;
   onWakeDetected: () => void;
+  onOpenSettings?: () => void;
 }
 
 const RESPONSES = [
@@ -19,9 +21,8 @@ const RESPONSES = [
   "All systems nominal. Shall I engage the perimeter defense grid?",
 ];
 
-const WAKE_PATTERNS = [/\bjarvis\b/i, /\bjar vis\b/i, /\bhey jarvis\b/i];
-
-export function ChatTerminal({ onListenChange, onSpeakChange, onWakeDetected }: Props) {
+export function ChatTerminal({ onListenChange, onSpeakChange, onWakeDetected, onOpenSettings }: Props) {
+  const cfg = useJarvisSettings();
   const [messages, setMessages] = useState<Msg[]>([
     { role: "ai", text: "Good evening. All systems are online and operating at peak efficiency. Say 'JARVIS' to activate voice command." },
   ]);
@@ -38,6 +39,8 @@ export function ChatTerminal({ onListenChange, onSpeakChange, onWakeDetected }: 
   const cmdRecRef = useRef<any>(null);
   const listeningRef = useRef(false);
   const wakeArmedRef = useRef(false);
+  const lastWakeAtRef = useRef(0);
+  const cmdTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => { scrollRef.current?.scrollTo({ top: 9e9, behavior: "smooth" }); }, [messages, typing]);
   useEffect(() => { onListenChange(listening); listeningRef.current = listening; }, [listening, onListenChange]);
@@ -65,54 +68,10 @@ export function ChatTerminal({ onListenChange, onSpeakChange, onWakeDetected }: 
     replyAndSpeak(t);
   }, [replyAndSpeak]);
 
-  // ===== Command recognition (mic button) =====
-  const stopCommand = useCallback(() => {
-    try { cmdRecRef.current?.stop(); } catch { /* noop */ }
-  }, []);
+  // forward decl for command starter to be referenced in wake
+  const startCommandRef = useRef<() => void>(() => { /* noop */ });
 
-  const startCommand = useCallback(() => {
-    if (!supported) { setError("Speech recognition not supported in this browser. Try Chrome."); return; }
-    cancelSpeak();
-    onSpeakChange(false);
-    // pause wake while command is active
-    try { wakeRecRef.current?.stop(); } catch { /* noop */ }
-
-    const rec = getSpeechRecognition();
-    if (!rec) return;
-    rec.continuous = false;
-    rec.interimResults = true;
-    rec.lang = "en-US";
-    cmdRecRef.current = rec;
-    let finalText = "";
-
-    rec.onstart = () => { setListening(true); setError(null); };
-    rec.onresult = (e: any) => {
-      let interimStr = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) finalText += r[0].transcript;
-        else interimStr += r[0].transcript;
-      }
-      setInterim(interimStr);
-      if (finalText) setInput(finalText.trim());
-    };
-    rec.onerror = (e: any) => {
-      setError(e.error === "not-allowed" ? "Microphone permission denied." : `Mic error: ${e.error}`);
-      setListening(false);
-    };
-    rec.onend = () => {
-      setListening(false);
-      setInterim("");
-      const toSend = (finalText || "").trim();
-      if (toSend) send(toSend);
-      // resume wake
-      if (wakeArmedRef.current) startWake();
-    };
-
-    try { rec.start(); } catch { /* already running */ }
-  }, [supported, onSpeakChange, send]);
-
-  // ===== Wake word recognition (continuous) =====
+  // ===== Wake word recognition (continuous, configurable) =====
   const startWake = useCallback(() => {
     if (!supported) return;
     if (listeningRef.current) return;
@@ -125,14 +84,17 @@ export function ChatTerminal({ onListenChange, onSpeakChange, onWakeDetected }: 
     wakeRecRef.current = rec;
 
     rec.onresult = (e: any) => {
+      const s = getJarvisSettings();
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const transcript: string = e.results[i][0].transcript || "";
-        if (WAKE_PATTERNS.some((p) => p.test(transcript))) {
-          onWakeDetected();
-          try { rec.stop(); } catch { /* noop */ }
-          setTimeout(() => startCommand(), 1400);
-          return;
-        }
+        if (!matchesWake(transcript, s.wakePhrases, s.sensitivity)) continue;
+        const now = Date.now();
+        if (now - lastWakeAtRef.current < s.cooldownMs) return;
+        lastWakeAtRef.current = now;
+        onWakeDetected();
+        try { rec.stop(); } catch { /* noop */ }
+        setTimeout(() => startCommandRef.current(), 1400);
+        return;
       }
     };
     rec.onerror = (e: any) => {
@@ -142,13 +104,68 @@ export function ChatTerminal({ onListenChange, onSpeakChange, onWakeDetected }: 
       }
     };
     rec.onend = () => {
-      // auto-restart while armed and not in command mode
       if (wakeArmedRef.current && !listeningRef.current) {
         setTimeout(() => { try { rec.start(); } catch { /* noop */ } }, 250);
       }
     };
     try { rec.start(); } catch { /* noop */ }
-  }, [supported, onWakeDetected, startCommand]);
+  }, [supported, onWakeDetected]);
+
+  // ===== Command recognition (mic button) =====
+  const stopCommand = useCallback(() => {
+    try { cmdRecRef.current?.stop(); } catch { /* noop */ }
+  }, []);
+
+  const startCommand = useCallback(() => {
+    if (!supported) { setError("Speech recognition not supported in this browser. Try Chrome."); return; }
+    cancelSpeak();
+    onSpeakChange(false);
+    try { wakeRecRef.current?.stop(); } catch { /* noop */ }
+
+    const rec = getSpeechRecognition();
+    if (!rec) return;
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.lang = "en-US";
+    cmdRecRef.current = rec;
+    let finalText = "";
+
+    const clearTimer = () => { if (cmdTimeoutRef.current) { window.clearTimeout(cmdTimeoutRef.current); cmdTimeoutRef.current = null; } };
+    const armTimer = () => {
+      clearTimer();
+      cmdTimeoutRef.current = window.setTimeout(() => { try { rec.stop(); } catch { /* noop */ } }, getJarvisSettings().commandTimeoutMs);
+    };
+
+    rec.onstart = () => { setListening(true); setError(null); armTimer(); };
+    rec.onresult = (e: any) => {
+      let interimStr = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finalText += r[0].transcript;
+        else interimStr += r[0].transcript;
+      }
+      setInterim(interimStr);
+      if (finalText) setInput(finalText.trim());
+      armTimer();
+    };
+    rec.onerror = (e: any) => {
+      setError(e.error === "not-allowed" ? "Microphone permission denied." : `Mic error: ${e.error}`);
+      setListening(false);
+      clearTimer();
+    };
+    rec.onend = () => {
+      setListening(false);
+      setInterim("");
+      clearTimer();
+      const toSend = (finalText || "").trim();
+      if (toSend) send(toSend);
+      if (wakeArmedRef.current) startWake();
+    };
+
+    try { rec.start(); } catch { /* already running */ }
+  }, [supported, onSpeakChange, send, startWake]);
+
+  useEffect(() => { startCommandRef.current = startCommand; }, [startCommand]);
 
   const toggleWake = () => {
     if (!supported) { setError("Speech recognition not supported in this browser. Try Chrome."); return; }
@@ -167,10 +184,16 @@ export function ChatTerminal({ onListenChange, onSpeakChange, onWakeDetected }: 
     else startCommand();
   };
 
+  const toggleTts = () => {
+    if (cfg.ttsEnabled) cancelSpeak();
+    setJarvisSettings({ ttsEnabled: !cfg.ttsEnabled });
+  };
+
   // cleanup
   useEffect(() => () => {
     try { wakeRecRef.current?.stop(); } catch { /* noop */ }
     try { cmdRecRef.current?.stop(); } catch { /* noop */ }
+    if (cmdTimeoutRef.current) window.clearTimeout(cmdTimeoutRef.current);
     cancelSpeak();
   }, []);
 
@@ -179,20 +202,38 @@ export function ChatTerminal({ onListenChange, onSpeakChange, onWakeDetected }: 
       <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
         <div className="flex items-center gap-2">
           <Sparkles className="h-3.5 w-3.5 text-cyan" />
-          <span className="font-display text-[11px] tracking-[0.3em] text-cyan neon-text">CONVERSE // TERMINAL</span>
+          <span className="font-display text-[11px] tracking-[0.3em] text-cyan neon-text">J.A.R.V.I.S. CONSOLE</span>
         </div>
-        <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
           <button
             onClick={toggleWake}
             className={`flex items-center gap-1.5 rounded-sm border px-2 py-0.5 font-display tracking-[0.25em] transition ${
               wakeArmed ? "border-neon/60 bg-neon/10 text-neon" : "border-border hover:border-cyan/60 hover:text-cyan"
             }`}
-            title="Toggle wake-word listening"
+            title={`Wake phrases: ${cfg.wakePhrases.join(", ")}`}
           >
             <span className={`h-1.5 w-1.5 rounded-full ${wakeArmed ? "animate-pulse bg-neon" : "bg-muted-foreground/50"}`} />
             WAKE: {wakeArmed ? "ARMED" : "OFF"}
           </button>
-          <span className="hidden sm:inline">NEURAL LINK STABLE</span>
+          <button
+            onClick={toggleTts}
+            className={`flex items-center gap-1.5 rounded-sm border px-2 py-0.5 font-display tracking-[0.25em] transition ${
+              cfg.ttsEnabled ? "border-cyan/60 bg-cyan/10 text-cyan" : "border-border hover:border-cyan/60 hover:text-cyan"
+            }`}
+            title="Toggle speech synthesis"
+          >
+            {cfg.ttsEnabled ? <Volume2 className="h-3 w-3" /> : <VolumeX className="h-3 w-3" />}
+            VOICE {cfg.ttsEnabled ? "ON" : "OFF"}
+          </button>
+          {onOpenSettings && (
+            <button
+              onClick={onOpenSettings}
+              className="rounded-sm border border-border p-1 hover:border-cyan/60 hover:text-cyan"
+              title="Voice & wake settings"
+            >
+              <Cog className="h-3 w-3" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -254,7 +295,7 @@ export function ChatTerminal({ onListenChange, onSpeakChange, onWakeDetected }: 
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={listening ? "Listening…" : "Issue a command, sir..."}
+            placeholder={listening ? "Listening…" : "Speak or type your command, Sir…"}
             className="flex-1 bg-transparent font-mono text-sm text-foreground placeholder:text-muted-foreground/60 outline-none"
           />
           <button

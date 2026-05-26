@@ -1,5 +1,5 @@
 // Browser Web Speech API helpers (TTS + STT)
-// All client-side, no API keys required.
+import { getJarvisSettings } from "./jarvis-settings";
 
 type AnyWindow = typeof window & {
   SpeechRecognition?: any;
@@ -19,22 +19,22 @@ export function isSpeechRecognitionSupported(): boolean {
   return Boolean(w.SpeechRecognition || w.webkitSpeechRecognition);
 }
 
-// Lazily pick a "JARVIS-like" voice: prefer English male voices.
-let cachedVoice: SpeechSynthesisVoice | null = null;
-function pickVoice(): SpeechSynthesisVoice | null {
+function resolveVoice(uri: string | null): SpeechSynthesisVoice | null {
   if (typeof window === "undefined" || !window.speechSynthesis) return null;
-  if (cachedVoice) return cachedVoice;
   const voices = window.speechSynthesis.getVoices();
   if (!voices.length) return null;
-  const preferred =
+  if (uri) {
+    const v = voices.find((v) => v.voiceURI === uri);
+    if (v) return v;
+  }
+  return (
     voices.find((v) => /Google UK English Male/i.test(v.name)) ||
     voices.find((v) => /Daniel/i.test(v.name) && v.lang.startsWith("en")) ||
     voices.find((v) => /Microsoft.*(Guy|Ryan|George)/i.test(v.name)) ||
     voices.find((v) => v.lang.startsWith("en-GB")) ||
     voices.find((v) => v.lang.startsWith("en")) ||
-    voices[0];
-  cachedVoice = preferred;
-  return preferred;
+    voices[0]
+  );
 }
 
 export interface SpeakOptions {
@@ -43,18 +43,19 @@ export interface SpeakOptions {
 }
 
 export function speak(text: string, opts: SpeakOptions = {}) {
-  if (typeof window === "undefined" || !window.speechSynthesis) {
+  const cfg = getJarvisSettings();
+  if (!cfg.ttsEnabled || typeof window === "undefined" || !window.speechSynthesis) {
     opts.onEnd?.();
     return;
   }
   try {
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
-    const v = pickVoice();
+    const v = resolveVoice(cfg.voiceURI);
     if (v) u.voice = v;
-    u.rate = 1.0;
-    u.pitch = 0.85;
-    u.volume = 1;
+    u.rate = cfg.rate;
+    u.pitch = cfg.pitch;
+    u.volume = cfg.volume;
     u.onstart = () => opts.onStart?.();
     u.onend = () => opts.onEnd?.();
     u.onerror = () => opts.onEnd?.();
@@ -68,12 +69,4 @@ export function cancelSpeak() {
   if (typeof window !== "undefined" && window.speechSynthesis) {
     window.speechSynthesis.cancel();
   }
-}
-
-// Warm voices list (some browsers populate async)
-if (typeof window !== "undefined" && window.speechSynthesis) {
-  window.speechSynthesis.onvoiceschanged = () => {
-    cachedVoice = null;
-    pickVoice();
-  };
 }
